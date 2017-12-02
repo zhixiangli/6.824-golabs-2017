@@ -1,5 +1,11 @@
 package mapreduce
 
+import (
+	"encoding/json"
+	"log"
+	"os"
+)
+
 // doReduce manages one reduce task: it reads the intermediate
 // key/value pairs (produced by the map phase) for this task, sorts the
 // intermediate key/value pairs by key, calls the user-defined reduce function
@@ -43,4 +49,44 @@ func doReduce(
 	// }
 	// file.Close()
 	//
+
+	// read map output file & group key-value
+	groupMap := make(map[string][]string)
+	for i := 0; i < nMap; i++ {
+		interFilename := reduceName(jobName, i, reduceTaskNumber)
+		interFile, err := os.Open(interFilename)
+		if err != nil {
+			log.Fatalf("open file %s err: %s", interFilename, err)
+		}
+		defer interFile.Close()
+		jsonDec := json.NewDecoder(interFile)
+		for jsonDec.More() {
+			var entry KeyValue
+			if err := jsonDec.Decode(&entry); err != nil {
+				log.Fatalf("decode entry %v err: %s", entry, err)
+			}
+			if _, exits := groupMap[entry.Key]; !exits {
+				groupMap[entry.Key] = make([]string, 0)
+			}
+			groupMap[entry.Key] = append(groupMap[entry.Key], entry.Value)
+		}
+	}
+
+	// invoke reduceF & write to output file
+	reducedFile, err := os.Create(outFile)
+	if err != nil {
+		log.Fatalf("create file %s err: %s", outFile, err)
+	}
+	defer reducedFile.Close()
+	jsonEnc := json.NewEncoder(reducedFile)
+	for key, values := range groupMap {
+		entry := KeyValue{
+			Key:   key,
+			Value: reduceF(key, values),
+		}
+		if err := jsonEnc.Encode(entry); err != nil {
+			log.Fatalf("json encode %v err: %s", entry, err)
+		}
+	}
+
 }
