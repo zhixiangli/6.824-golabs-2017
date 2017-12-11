@@ -37,8 +37,8 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	//
 	var waitGroup sync.WaitGroup
 	for i := 0; i < ntasks; i++ {
+		waitGroup.Add(1)
 		go func(taskNumber int) {
-			waitGroup.Add(1)
 			defer waitGroup.Done()
 
 			doTaskArgs := DoTaskArgs{
