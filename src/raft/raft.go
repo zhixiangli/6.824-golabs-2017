@@ -181,8 +181,6 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	go func() { rf.electionPing <- args.CandidateId }()
-
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
@@ -204,6 +202,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateId
 		rf.votesCount = 0
 		reply.VoteGranted = true
+		go func() { rf.electionPing <- args.CandidateId }()
 	}
 }
 
@@ -256,10 +255,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 	if reply.VoteGranted {
 		rf.votesCount++
-	}
-	if rf.votesCount > len(rf.peers)/2 {
-		rf.electionEnds <- true
-		rf.switchTo(RAFT_LEADER)
+		if rf.votesCount > len(rf.peers)/2 {
+			rf.electionEnds <- true
+			rf.switchTo(RAFT_LEADER)
+		}
 	}
 	return true
 }
@@ -271,8 +270,7 @@ func (rf *Raft) broadcastRequestVote() {
 	if rf.state != RAFT_CANDIDATE {
 		return
 	}
-
-	rf.votesCount = 0
+	DPrintf("%s, start to send request vote to all", rf.getInfo())
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
@@ -280,6 +278,9 @@ func (rf *Raft) broadcastRequestVote() {
 		LastLogTerm:  rf.getLastEntry().Term,
 	}
 	for server := range rf.peers {
+		if server == rf.me {
+			continue
+		}
 		go func(server int) {
 			rf.sendRequestVote(server, args, &RequestVoteReply{})
 		}(server)
@@ -301,8 +302,6 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	go func() { rf.heartbeatPing <- args.LeaderId }()
-
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
@@ -313,6 +312,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currentTerm {
 		return
 	}
+
+	go func() { rf.heartbeatPing <- args.LeaderId }()
 
 	rf.switchTo(RAFT_FOLLOWER)
 	rf.currentTerm = args.Term
@@ -377,6 +378,8 @@ func (rf *Raft) broadcastAppendEntries() {
 		return
 	}
 
+	DPrintf("%s, start to send heartbeat to all", rf.getInfo())
+
 	for i := len(rf.log) - 1; i > rf.commitIndex && rf.log[i].Term == rf.currentTerm; i-- {
 		commitCount := 1
 		for j := 0; j < len(rf.peers); j++ {
@@ -389,7 +392,7 @@ func (rf *Raft) broadcastAppendEntries() {
 		}
 		if commitCount > len(rf.peers)/2 {
 			rf.commitIndex = i
-			go func() { rf.applyPing <- true }()
+			rf.applyPing <- true
 			break
 		}
 	}
@@ -419,7 +422,7 @@ func (rf *Raft) electionTimeout() time.Duration {
 	return time.Duration(timeout) * time.Millisecond
 }
 
-func (rf *Raft) switchTo(state RaftState) { // should lock before calling this function
+func (rf *Raft) switchTo(state RaftState) {
 	DPrintf("%s, state from %v -> %v", rf.getInfo(), rf.state, state)
 	rf.state = state
 	switch state {
@@ -429,7 +432,7 @@ func (rf *Raft) switchTo(state RaftState) { // should lock before calling this f
 	case RAFT_CANDIDATE:
 		rf.votedFor = rf.me
 		rf.currentTerm++
-		rf.votesCount = 0
+		rf.votesCount = 1
 		rf.electionEnds = make(chan bool)
 	case RAFT_LEADER:
 		rf.matchIndex = make([]int, len(rf.peers))
@@ -482,9 +485,6 @@ func (rf *Raft) electionLoop() {
 			case <-time.After(rf.electionTimeout()):
 			}
 		case RAFT_LEADER:
-			rf.mu.RLock()
-			DPrintf("%s, start to send heartbeat to all", rf.getInfo())
-			rf.mu.RUnlock()
 			rf.broadcastAppendEntries()
 			time.Sleep(HEARTBEAT_TIMEOUT)
 		}
@@ -493,27 +493,19 @@ func (rf *Raft) electionLoop() {
 
 func (rf *Raft) applyLoop() {
 	for {
+		<-rf.applyPing
 		rf.mu.Lock()
-		running := rf.isRunning
-		rf.mu.Unlock()
-		if !running {
-			break
-		}
-		select {
-		case <-rf.applyPing:
-			rf.mu.Lock()
-			for rf.lastApplied < rf.commitIndex {
-				rf.lastApplied++
-				msg := ApplyMsg{
-					Index:   rf.log[rf.lastApplied].Index,
-					Command: rf.log[rf.lastApplied].Command,
-				}
-				DPrintf("%s, apply %v", rf.getInfo(), msg)
-				rf.applyCh <- msg
-				rf.persist()
+		for rf.lastApplied < rf.commitIndex {
+			rf.lastApplied++
+			msg := ApplyMsg{
+				Index:   rf.log[rf.lastApplied].Index,
+				Command: rf.log[rf.lastApplied].Command,
 			}
-			rf.mu.Unlock()
+			DPrintf("%s, apply %v", rf.getInfo(), msg)
+			rf.applyCh <- msg
+			rf.persist()
 		}
+		rf.mu.Unlock()
 	}
 }
 
