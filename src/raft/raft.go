@@ -37,7 +37,7 @@ const (
 )
 
 const (
-	HEARTBEAT_TIMEOUT       = time.Millisecond * 200
+	HEARTBEAT_TIMEOUT       = time.Millisecond * 50
 	ELECTION_MIN_TIMEOUT_MS = 400
 	ELECTION_MAX_TIMEOUT_MS = 800
 )
@@ -126,8 +126,6 @@ func (rf *Raft) persist() {
 	e := gob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
-	e.Encode(rf.commitIndex)
-	e.Encode(rf.lastApplied)
 	e.Encode(rf.log)
 	rf.persister.SaveRaftState(w.Bytes())
 }
@@ -149,8 +147,6 @@ func (rf *Raft) readPersist(data []byte) {
 	d := gob.NewDecoder(r)
 	d.Decode(&rf.currentTerm)
 	d.Decode(&rf.votedFor)
-	d.Decode(&rf.commitIndex)
-	d.Decode(&rf.lastApplied)
 	d.Decode(&rf.log)
 }
 
@@ -297,8 +293,9 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int  // currentTerm, for leader to update itself
-	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	Term      int  // currentTerm, for leader to update itself
+	Success   bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	NextIndex int  // when rejecting an AppendEntries request, the follower can include the term of the conflicting entry and the first index it stores for that term
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -320,24 +317,33 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.votedFor = args.LeaderId
 	rf.votesCount = 0
 
-	match := len(rf.log) - 1
-	for ; match >= 0; match-- {
-		if rf.log[match].Index == args.PrevLogIndex && rf.log[match].Term == args.PrevLogTerm {
-			break
-		}
+	if args.PrevLogIndex > rf.getLastEntry().Index {
+		reply.NextIndex = rf.getLastEntry().Index + 1
+		return
 	}
-	if match < 0 {
+
+	if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
+		// will remove all entries in current term
+		for i := args.PrevLogIndex - 1; i >= 0; i-- {
+			if rf.log[i].Term != rf.log[args.PrevLogIndex].Term {
+				reply.NextIndex = rf.log[i].Index + 1
+				break
+			}
+		}
 		return
 	}
 
 	reply.Success = true
-	rf.log = append(rf.log[:match+1], args.Entries...)
-	if args.LeaderCommit >= len(rf.log) {
-		rf.commitIndex = len(rf.log) - 1
-	} else {
-		rf.commitIndex = args.LeaderCommit
+	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	reply.NextIndex = rf.getLastEntry().Index + 1
+	if args.LeaderCommit > rf.commitIndex {
+		if args.LeaderCommit >= len(rf.log) {
+			rf.commitIndex = len(rf.log) - 1
+		} else {
+			rf.commitIndex = args.LeaderCommit
+		}
+		rf.applyPing <- true
 	}
-	rf.applyPing <- true
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -362,10 +368,10 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	}
 	if reply.Success {
 		rf.nextIndex[server] = args.Entries[len(args.Entries)-1].Index + 1
+		rf.matchIndex[server] = rf.nextIndex[server] - 1
 	} else {
-		rf.nextIndex[server]--
+		rf.nextIndex[server] = reply.NextIndex
 	}
-	rf.matchIndex[server] = rf.nextIndex[server] - 1
 	return true
 }
 
@@ -401,7 +407,7 @@ func (rf *Raft) broadcastAppendEntries() {
 		if server == rf.me {
 			continue
 		}
-		prevEntry := rf.log[rf.matchIndex[server]]
+		prevEntry := rf.log[rf.nextIndex[server]-1]
 		args := &AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
