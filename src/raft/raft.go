@@ -21,17 +21,12 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
-	"log"
 	"math/rand"
 	"sync"
 	"time"
 
 	"labrpc"
 )
-
-func init() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-}
 
 type RaftState int
 
@@ -80,8 +75,8 @@ type Raft struct {
 	isRunning     bool
 	votesCount    int
 	electionEnds  chan bool
-	electionPing  chan bool
-	heartbeatPing chan bool
+	electionPing  chan int
+	heartbeatPing chan int
 	applyPing     chan bool
 	state         RaftState
 	applyCh       chan ApplyMsg
@@ -95,12 +90,12 @@ type Raft struct {
 	matchIndex  []int      // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 }
 
-func (rf *Raft) debug(desc string) {
-	//log.Printf("%50s, me: %v, state: %v, currentTerm: %v, votesCount: %v, votedFor: %v, log: %v, commitIndex: %v, lastApplied: %v, nextIndex: %v, matchIndex: %v",
-	//	desc, rf.me, rf.state, rf.currentTerm, rf.votesCount, rf.votedFor, rf.log, rf.commitIndex, rf.lastApplied, rf.nextIndex, rf.matchIndex)
+func (rf *Raft) getInfo() string {
+	return fmt.Sprintf("me: %v, state: %v, currentTerm: %v, votesCount: %v, votedFor: %v, log: %v, commitIndex: %v, lastApplied: %v, nextIndex: %v, matchIndex: %v",
+		rf.me, rf.state, rf.currentTerm, rf.votesCount, rf.votedFor, rf.log, rf.commitIndex, rf.lastApplied, rf.nextIndex, rf.matchIndex)
 }
 
-func (rf *Raft) GetLastEntry() LogEntry {
+func (rf *Raft) getLastEntry() LogEntry {
 	return rf.log[len(rf.log)-1]
 }
 
@@ -186,7 +181,7 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	go func() { rf.electionPing <- true }()
+	go func() { rf.electionPing <- args.CandidateId }()
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -204,7 +199,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.votedFor >= 0 && rf.votedFor != args.CandidateId {
 		return
 	}
-	lastEntry := rf.GetLastEntry()
+	lastEntry := rf.getLastEntry()
 	if args.LastLogTerm > lastEntry.Term || (args.LastLogTerm == lastEntry.Term && args.LastLogIndex >= lastEntry.Index) {
 		rf.votedFor = args.CandidateId
 		rf.votesCount = 0
@@ -250,7 +245,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	defer rf.mu.Unlock()
 	defer rf.persist()
 
-	rf.debug(fmt.Sprintf("sent request vote to %v", server))
+	DPrintf("%s, sent request vote to %v, args: %v, reply: %v", rf.getInfo(), server, args, reply)
 	if args.Term != rf.currentTerm || rf.state != RAFT_CANDIDATE {
 		return true
 	}
@@ -281,8 +276,8 @@ func (rf *Raft) broadcastRequestVote() {
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
-		LastLogIndex: rf.GetLastEntry().Index,
-		LastLogTerm:  rf.GetLastEntry().Term,
+		LastLogIndex: rf.getLastEntry().Index,
+		LastLogTerm:  rf.getLastEntry().Term,
 	}
 	for server := range rf.peers {
 		go func(server int) {
@@ -306,7 +301,7 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	go func() { rf.heartbeatPing <- true }()
+	go func() { rf.heartbeatPing <- args.LeaderId }()
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -427,7 +422,7 @@ func (rf *Raft) electionTimeout() time.Duration {
 }
 
 func (rf *Raft) switchTo(state RaftState) { // should lock before calling this function
-	rf.debug(fmt.Sprintf("state from %v -> %v", rf.state, state))
+	DPrintf("%s, state from %v -> %v", rf.getInfo(), rf.state, state)
 	rf.state = state
 	switch state {
 	case RAFT_FOLLOWER:
@@ -442,7 +437,7 @@ func (rf *Raft) switchTo(state RaftState) { // should lock before calling this f
 		rf.matchIndex = make([]int, len(rf.peers))
 		rf.nextIndex = make([]int, len(rf.peers))
 		for i := range rf.peers {
-			rf.nextIndex[i] = rf.GetLastEntry().Index + 1
+			rf.nextIndex[i] = rf.getLastEntry().Index + 1
 			rf.matchIndex[i] = 0
 		}
 	}
@@ -464,17 +459,17 @@ func (rf *Raft) electionLoop() {
 		switch state {
 		case RAFT_FOLLOWER:
 			select {
-			case <-rf.heartbeatPing:
+			case from := <-rf.heartbeatPing:
 				rf.mu.RLock()
-				rf.debug("received heartbeat ping")
+				DPrintf("%s, received heartbeat ping from %v", rf.getInfo(), from)
 				rf.mu.RUnlock()
-			case <-rf.electionPing:
+			case from := <-rf.electionPing:
 				rf.mu.RLock()
-				rf.debug("received election ping")
+				DPrintf("%s, received election ping from %v", rf.getInfo(), from)
 				rf.mu.RUnlock()
 			case <-time.After(rf.electionTimeout()):
 				rf.mu.Lock()
-				rf.debug("follower start to election")
+				DPrintf("%s, follower start to election", rf.getInfo())
 				rf.state = RAFT_CANDIDATE
 				rf.mu.Unlock()
 			}
@@ -490,7 +485,7 @@ func (rf *Raft) electionLoop() {
 			}
 		case RAFT_LEADER:
 			rf.mu.RLock()
-			rf.debug("start to send heartbeat")
+			DPrintf("%s, start to send heartbeat to all", rf.getInfo())
 			rf.mu.RUnlock()
 			rf.broadcastAppendEntries()
 			time.Sleep(HEARTBEAT_TIMEOUT)
@@ -515,7 +510,7 @@ func (rf *Raft) applyLoop() {
 					Index:   rf.log[rf.lastApplied].Index,
 					Command: rf.log[rf.lastApplied].Command,
 				}
-				rf.debug(fmt.Sprintf("apply %v", msg))
+				DPrintf("%s, apply %v", rf.getInfo(), msg)
 				rf.applyCh <- msg
 				rf.persist()
 			}
@@ -546,7 +541,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		defer rf.mu.Unlock()
 		defer rf.persist()
 
-		rf.debug(fmt.Sprintf("start to append %v", command))
+		DPrintf("%s, start to append %v", rf.getInfo())
 
 		index = len(rf.log)
 		rf.log = append(rf.log, LogEntry{
@@ -569,7 +564,7 @@ func (rf *Raft) Kill() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.isRunning = false
-	rf.debug("killed!!!")
+	DPrintf("%s, killed!!!", rf.getInfo())
 }
 
 //
@@ -603,8 +598,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.applyCh = applyCh
 
-	rf.heartbeatPing = make(chan bool)
-	rf.electionPing = make(chan bool)
+	rf.heartbeatPing = make(chan int)
+	rf.electionPing = make(chan int)
 	rf.applyPing = make(chan bool)
 
 	// initialize from state persisted before a crash
