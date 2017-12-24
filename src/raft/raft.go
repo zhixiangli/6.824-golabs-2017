@@ -398,21 +398,19 @@ func (rf *Raft) broadcastAppendEntries() {
 		if server == rf.me {
 			continue
 		}
-		go func(server int) {
-			rf.mu.RLock()
-			prevEntry := rf.log[rf.matchIndex[server]]
-			args := &AppendEntriesArgs{
-				Term:         rf.currentTerm,
-				LeaderId:     rf.me,
-				PrevLogIndex: prevEntry.Index,
-				PrevLogTerm:  prevEntry.Term,
-				Entries:      make([]LogEntry, len(rf.log)-(prevEntry.Index+1)),
-				LeaderCommit: rf.commitIndex,
-			}
-			copy(args.Entries, rf.log[prevEntry.Index+1:])
-			rf.mu.RUnlock()
+		prevEntry := rf.log[rf.matchIndex[server]]
+		args := &AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: prevEntry.Index,
+			PrevLogTerm:  prevEntry.Term,
+			Entries:      make([]LogEntry, len(rf.log)-(prevEntry.Index+1)),
+			LeaderCommit: rf.commitIndex,
+		}
+		copy(args.Entries, rf.log[prevEntry.Index+1:])
+		go func(server int, args *AppendEntriesArgs) {
 			rf.sendAppendEntries(server, args, &AppendEntriesReply{})
-		}(server)
+		}(server, args)
 	}
 }
 
