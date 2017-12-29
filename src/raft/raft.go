@@ -75,10 +75,10 @@ type Raft struct {
 	// state a Raft server must maintain.
 	isRunning     int32
 	votesCount    int
-	electionEnds  chan bool
+	electionEnds  chan int
 	electionPing  chan int
 	heartbeatPing chan int
-	applyPing     chan bool
+	applyPing     chan int
 	state         RaftState
 	applyCh       chan ApplyMsg
 
@@ -114,6 +114,15 @@ func (rf *Raft) getEntry(logIndex int) (LogEntry, bool) {
 		return LogEntry{}, false
 	}
 	return rf.log[offset], true
+}
+
+func (rf *Raft) sendIfChanAbsent(ch chan int, value int) bool {
+	select {
+	case ch <- value:
+		return true
+	default:
+		return false
+	}
 }
 
 // return currentTerm and whether this server
@@ -220,9 +229,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votesCount = 0
 		reply.VoteGranted = true
 
-		select {
-		case rf.electionPing <- args.CandidateId:
-		default:
+		if !rf.sendIfChanAbsent(rf.electionPing, args.CandidateId) {
 			DPrintf("%s, election channel is full, ignore %v", rf.getInfo(), args.CandidateId)
 		}
 	}
@@ -278,7 +285,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	if reply.VoteGranted {
 		rf.votesCount++
 		if rf.votesCount > len(rf.peers)/2 {
-			rf.electionEnds <- true
+			rf.sendIfChanAbsent(rf.electionEnds, 0)
 			rf.switchTo(RAFT_LEADER)
 		}
 	}
@@ -336,9 +343,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	select {
-	case rf.heartbeatPing <- args.LeaderId:
-	default:
+	if !rf.sendIfChanAbsent(rf.heartbeatPing, args.LeaderId) {
 		DPrintf("%s, heartbeat channel is full, ignore %v", rf.getInfo(), args.LeaderId)
 	}
 
@@ -376,7 +381,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		} else {
 			rf.commitIndex = args.LeaderCommit
 		}
-		rf.applyPing <- true
+		rf.sendIfChanAbsent(rf.applyPing, 0)
 	}
 }
 
@@ -420,7 +425,7 @@ func (rf *Raft) updateCommitIndex() {
 		}
 		if commitCount > len(rf.peers)/2 {
 			rf.commitIndex = rf.log[i].Index
-			rf.applyPing <- true
+			rf.sendIfChanAbsent(rf.applyPing, 0)
 			break
 		}
 	}
@@ -491,9 +496,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		return
 	}
 
-	select {
-	case rf.heartbeatPing <- args.LeaderId:
-	default:
+	if !rf.sendIfChanAbsent(rf.heartbeatPing, args.LeaderId) {
 		DPrintf("%s, heartbeat channel is full, ignore %v", rf.getInfo(), args.LeaderId)
 	}
 
@@ -510,7 +513,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.log = newLog
 	rf.commitIndex = args.LastIncludedIndex
 	rf.lastApplied = 0
-	rf.applyPing <- true
+	rf.sendIfChanAbsent(rf.applyPing, 0)
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
@@ -559,7 +562,7 @@ func (rf *Raft) switchTo(state RaftState) {
 		rf.votedFor = rf.me
 		rf.currentTerm++
 		rf.votesCount = 1
-		rf.electionEnds = make(chan bool)
+		rf.electionEnds = make(chan int, 1)
 	case RAFT_LEADER:
 		rf.matchIndex = make([]int, len(rf.peers))
 		rf.nextIndex = make([]int, len(rf.peers))
@@ -732,7 +735,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.heartbeatPing = make(chan int, 1)
 	rf.electionPing = make(chan int, 1)
-	rf.applyPing = make(chan bool)
+	rf.applyPing = make(chan int, 1)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
