@@ -126,7 +126,7 @@ func (kv *RaftKV) Kill() {
 	// Your code here, if desired.
 }
 
-func (kv *RaftKV) applyMsg(op *Op) {
+func (kv *RaftKV) applyOp(op *Op) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	switch op.Type {
@@ -138,9 +138,9 @@ func (kv *RaftKV) applyMsg(op *Op) {
 	kv.acked[op.ClerkId] = op.RequestId
 }
 
-func (kv *RaftKV) isAcked(op *Op) bool {
-	if maxRequestId, ok := kv.acked[op.ClerkId]; ok {
-		return maxRequestId >= op.RequestId
+func (kv *RaftKV) isAcked(clerkId int64, requestId uint64) bool {
+	if maxRequestId, ok := kv.acked[clerkId]; ok {
+		return maxRequestId >= requestId
 	}
 	return false
 }
@@ -167,15 +167,15 @@ func (kv *RaftKV) decodeSnapshot(data []byte) {
 	d.Decode(&kv.acked)
 }
 
-func (kv *RaftKV) applyMsgLoop() {
+func (kv *RaftKV) applyLoop() {
 	for {
 		msg := <-kv.applyCh
 		if msg.UseSnapshot {
 			kv.decodeSnapshot(msg.Snapshot)
 		} else {
 			op := msg.Command.(Op)
-			if !kv.isAcked(&op) {
-				kv.applyMsg(&op)
+			if !kv.isAcked(op.ClerkId, op.RequestId) {
+				kv.applyOp(&op)
 			}
 			resultChan := kv.getResultChan(msg.Index)
 			select {
@@ -215,7 +215,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
-	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.applyCh = make(chan raft.ApplyMsg, 1<<10)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
@@ -223,7 +223,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.result = make(map[int]chan Op)
 	kv.acked = make(map[int64]uint64)
 
-	go kv.applyMsgLoop()
+	go kv.applyLoop()
 
 	return kv
 }
