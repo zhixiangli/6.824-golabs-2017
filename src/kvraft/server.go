@@ -40,7 +40,7 @@ type Op struct {
 }
 
 type RaftKV struct {
-	mu      sync.RWMutex
+	mu      sync.Mutex
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
@@ -54,8 +54,6 @@ type RaftKV struct {
 }
 
 func (kv *RaftKV) getResultChan(index int) chan Op {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	resultChan, ok := kv.result[index]
 	if !ok {
 		resultChan = make(chan Op, 1)
@@ -69,7 +67,9 @@ func (kv *RaftKV) startAgreement(op Op) bool {
 	if !isLeader {
 		return false
 	}
+	kv.mu.Lock()
 	resultChan := kv.getResultChan(index)
+	kv.mu.Unlock()
 	select {
 	case res := <-resultChan:
 		return res == op
@@ -81,22 +81,24 @@ func (kv *RaftKV) startAgreement(op Op) bool {
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	op := Op{
-		Type: OP_GET,
-		Key:  args.Key,
+		Type:      OP_GET,
+		Key:       args.Key,
+		ClerkId:   args.ClerkId,
+		RequestId: args.RequestId,
 	}
 	if !kv.startAgreement(op) {
 		reply.WrongLeader = true
 		return
 	}
-	kv.mu.RLock()
-	value, ok := kv.data[args.Key]
-	kv.mu.RUnlock()
-	if ok {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if value, ok := kv.data[args.Key]; ok {
 		reply.Value = value
 		reply.Err = OK
 	} else {
 		reply.Err = ErrNoKey
 	}
+	kv.acked[op.ClerkId] = op.RequestId
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -127,8 +129,6 @@ func (kv *RaftKV) Kill() {
 }
 
 func (kv *RaftKV) applyOp(op *Op) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	switch op.Type {
 	case OP_PUT:
 		kv.data[op.Key] = op.Value
@@ -146,8 +146,6 @@ func (kv *RaftKV) isAcked(clerkId int64, requestId uint64) bool {
 }
 
 func (kv *RaftKV) encodeSnapshot() []byte {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	w := new(bytes.Buffer)
 	e := gob.NewEncoder(w)
 	e.Encode(kv.data)
@@ -159,10 +157,10 @@ func (kv *RaftKV) decodeSnapshot(data []byte) {
 	if data == nil || len(data) < 1 {
 		return
 	}
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	r := bytes.NewBuffer(data)
 	d := gob.NewDecoder(r)
+	kv.data = make(map[string]string)
+	kv.acked = make(map[int64]uint64)
 	d.Decode(&kv.data)
 	d.Decode(&kv.acked)
 }
@@ -170,6 +168,7 @@ func (kv *RaftKV) decodeSnapshot(data []byte) {
 func (kv *RaftKV) applyLoop() {
 	for {
 		msg := <-kv.applyCh
+		kv.mu.Lock()
 		if msg.UseSnapshot {
 			kv.decodeSnapshot(msg.Snapshot)
 		} else {
@@ -188,6 +187,7 @@ func (kv *RaftKV) applyLoop() {
 				kv.rf.UpdateSnapshot(kv.encodeSnapshot(), msg.Index)
 			}
 		}
+		kv.mu.Unlock()
 	}
 }
 

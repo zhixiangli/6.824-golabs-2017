@@ -46,8 +46,9 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	args := &GetArgs{
-		Key:     key,
-		ClerkId: ck.clerkId,
+		Key:       key,
+		ClerkId:   ck.clerkId,
+		RequestId: atomic.AddUint64(&ck.requestId, 1),
 	}
 	for i := 0; ; i = (i + 1) % len(ck.servers) {
 		reply := &GetReply{}
