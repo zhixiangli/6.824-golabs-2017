@@ -32,11 +32,9 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Type      string
-	Key       string
-	Value     string
-	ClerkId   int64
-	RequestId uint64
+	Type  string
+	Args  interface{}
+	Reply interface{}
 }
 
 type RaftKV struct {
@@ -62,59 +60,57 @@ func (kv *RaftKV) getResultChan(index int) chan Op {
 	return resultChan
 }
 
-func (kv *RaftKV) startAgreement(op Op) bool {
+func (kv *RaftKV) startAgreement(op Op) (bool, Op) {
 	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
-		return false
+		return false, Op{}
 	}
+	// wait agreement
 	kv.mu.Lock()
 	resultChan := kv.getResultChan(index)
 	kv.mu.Unlock()
 	select {
-	case res := <-resultChan:
-		return res == op
+	case result := <-resultChan:
+		return result.Type == op.Type, result
 	case <-time.After(OP_TIMEOUT):
-		return false
+		return false, Op{}
 	}
 }
 
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	op := Op{
-		Type:      OP_GET,
-		Key:       args.Key,
-		ClerkId:   args.ClerkId,
-		RequestId: args.RequestId,
+		Type: OP_GET,
+		Args: *args,
 	}
-	if !kv.startAgreement(op) {
-		reply.WrongLeader = true
-		return
-	}
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	if value, ok := kv.data[args.Key]; ok {
-		reply.Value = value
-		reply.Err = OK
+	if isLeader, result := kv.startAgreement(op); !isLeader {
+		reply.Meta.WrongLeader = true
 	} else {
-		reply.Err = ErrNoKey
+		meta := result.Args.(GetArgs).Meta
+		if meta != args.Meta {
+			reply.Meta.WrongLeader = true
+		} else {
+			*reply = result.Reply.(GetReply)
+		}
 	}
-	kv.acked[op.ClerkId] = op.RequestId
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{
-		Type:      args.Op,
-		Key:       args.Key,
-		Value:     args.Value,
-		ClerkId:   args.ClerkId,
-		RequestId: args.RequestId,
+		Type: args.Op,
+		Args: *args,
 	}
-	if !kv.startAgreement(op) {
-		reply.WrongLeader = true
-		return
+	if isLeader, result := kv.startAgreement(op); !isLeader {
+		reply.Meta.WrongLeader = true
+	} else {
+		meta := result.Args.(PutAppendArgs).Meta
+		if meta != args.Meta {
+			reply.Meta.WrongLeader = true
+		} else {
+			*reply = result.Reply.(PutAppendReply)
+		}
 	}
-	reply.Err = OK
 }
 
 //
@@ -128,21 +124,46 @@ func (kv *RaftKV) Kill() {
 	// Your code here, if desired.
 }
 
-func (kv *RaftKV) applyOp(op *Op) {
-	switch op.Type {
-	case OP_PUT:
-		kv.data[op.Key] = op.Value
-	case OP_APPEND:
-		kv.data[op.Key] += op.Value
-	}
-	kv.acked[op.ClerkId] = op.RequestId
-}
-
 func (kv *RaftKV) isAcked(clerkId int64, requestId uint64) bool {
 	if maxRequestId, ok := kv.acked[clerkId]; ok {
 		return maxRequestId >= requestId
 	}
 	return false
+}
+
+func (kv *RaftKV) applyGet(args GetArgs) (reply GetReply) {
+	if value, ok := kv.data[args.Key]; ok {
+		reply.Value = value
+		reply.Meta.Err = OK
+	} else {
+		reply.Meta.Err = ErrNoKey
+	}
+	return
+}
+
+func (kv *RaftKV) applyPutAppend(args PutAppendArgs) (reply PutAppendReply) {
+	reply.Meta.Err = OK
+	if kv.isAcked(args.Meta.ClerkId, args.Meta.RequestId) {
+		return
+	}
+	switch args.Op {
+	case OP_PUT:
+		kv.data[args.Key] = args.Value
+	case OP_APPEND:
+		kv.data[args.Key] += args.Value
+	}
+	kv.acked[args.Meta.ClerkId] = args.Meta.RequestId
+	return
+}
+
+func (kv *RaftKV) applyOp(op Op) interface{} {
+	switch op.Type {
+	case OP_GET:
+		return kv.applyGet(op.Args.(GetArgs))
+	case OP_PUT, OP_APPEND:
+		return kv.applyPutAppend(op.Args.(PutAppendArgs))
+	}
+	return nil
 }
 
 func (kv *RaftKV) encodeSnapshot() []byte {
@@ -173,9 +194,7 @@ func (kv *RaftKV) applyLoop() {
 			kv.decodeSnapshot(msg.Snapshot)
 		} else {
 			op := msg.Command.(Op)
-			if !kv.isAcked(op.ClerkId, op.RequestId) {
-				kv.applyOp(&op)
-			}
+			op.Reply = kv.applyOp(op)
 			resultChan := kv.getResultChan(msg.Index)
 			select {
 			case <-resultChan:
@@ -208,6 +227,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call gob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	gob.Register(Op{})
+	gob.Register(GetArgs{})
+	gob.Register(PutAppendArgs{})
 
 	kv := new(RaftKV)
 	kv.me = me

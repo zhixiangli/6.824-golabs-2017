@@ -7,6 +7,16 @@ const (
 
 type Err string
 
+type ArgsMeta struct {
+	ClerkId   int64
+	RequestId uint64
+}
+
+type ReplyMeta struct {
+	WrongLeader bool
+	Err         Err
+}
+
 // Put or Append
 type PutAppendArgs struct {
 	Key   string
@@ -15,24 +25,20 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	ClerkId   int64
-	RequestId uint64
+	Meta ArgsMeta
 }
 
 type PutAppendReply struct {
-	WrongLeader bool
-	Err         Err
+	Meta ReplyMeta
 }
 
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
-	ClerkId   int64
-	RequestId uint64
+	Meta ArgsMeta
 }
 
 type GetReply struct {
-	WrongLeader bool
-	Err         Err
-	Value       string
+	Meta  ReplyMeta
+	Value string
 }

@@ -46,14 +46,16 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	args := &GetArgs{
-		Key:       key,
-		ClerkId:   ck.clerkId,
-		RequestId: atomic.AddUint64(&ck.requestId, 1),
+		Key: key,
+		Meta: ArgsMeta{
+			ClerkId:   ck.clerkId,
+			RequestId: atomic.AddUint64(&ck.requestId, 1),
+		},
 	}
 	for i := 0; ; i = (i + 1) % len(ck.servers) {
 		reply := &GetReply{}
 		DPrintf("clerkId: %v, requestId: %v, Get args: %v to %v", ck.clerkId, ck.requestId, args, i)
-		if ok := ck.servers[i].Call("RaftKV.Get", args, reply); ok && !reply.WrongLeader {
+		if ok := ck.servers[i].Call("RaftKV.Get", args, reply); ok && !reply.Meta.WrongLeader {
 			DPrintf("clerkId: %v, requestId: %v, Get reply: %v", ck.clerkId, ck.requestId, reply)
 			return reply.Value
 		}
@@ -72,16 +74,18 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args := &PutAppendArgs{
-		Key:       key,
-		Value:     value,
-		Op:        op,
-		ClerkId:   ck.clerkId,
-		RequestId: atomic.AddUint64(&ck.requestId, 1),
+		Key:   key,
+		Value: value,
+		Op:    op,
+		Meta: ArgsMeta{
+			ClerkId:   ck.clerkId,
+			RequestId: atomic.AddUint64(&ck.requestId, 1),
+		},
 	}
 	for i := 0; ; i = (i + 1) % len(ck.servers) {
 		reply := &PutAppendReply{}
 		DPrintf("clerkId: %v, requestId: %v, PutAppend args: %v to %v", ck.clerkId, ck.requestId, args, i)
-		if ok := ck.servers[i].Call("RaftKV.PutAppend", args, reply); ok && !reply.WrongLeader {
+		if ok := ck.servers[i].Call("RaftKV.PutAppend", args, reply); ok && !reply.Meta.WrongLeader {
 			DPrintf("clerkId: %v, requestId: %v, PutAppend reply: %v", ck.clerkId, ck.requestId, reply)
 			return
 		}
