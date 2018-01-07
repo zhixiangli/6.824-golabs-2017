@@ -1,5 +1,7 @@
 package shardkv
 
+import "shardmaster"
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running op-at-a-time paxos.
@@ -10,12 +12,23 @@ package shardkv
 //
 
 const (
-	OK            = "OK"
-	ErrNoKey      = "ErrNoKey"
-	ErrWrongGroup = "ErrWrongGroup"
+	OK              = "OK"
+	ErrNoKey        = "ErrNoKey"
+	ErrWrongGroup   = "ErrWrongGroup"
+	ErrWrongVersion = "ErrWrongVersion"
 )
 
 type Err string
+
+type ArgsMeta struct {
+	ClerkId   int64
+	RequestId uint64
+}
+
+type ReplyMeta struct {
+	WrongLeader bool
+	Err         Err
+}
 
 // Put or Append
 type PutAppendArgs struct {
@@ -26,20 +39,63 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Meta ArgsMeta
 }
 
 type PutAppendReply struct {
-	WrongLeader bool
-	Err         Err
+	Meta ReplyMeta
 }
 
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	Meta ArgsMeta
 }
 
 type GetReply struct {
-	WrongLeader bool
-	Err         Err
-	Value       string
+	Meta  ReplyMeta
+	Value string
+}
+
+type UpgradeConfigArgs struct {
+	Config shardmaster.Config
+	Meta   ArgsMeta
+}
+
+type UpgradeConfigReply struct {
+	Meta ReplyMeta
+}
+
+type RequestShardArgs struct {
+	ConfigNum int
+	Shard     int
+	Meta      ArgsMeta
+}
+
+type RequestShardReply struct {
+	Data  map[string]string
+	Acked map[int64]uint64
+	Meta  ReplyMeta
+}
+
+type SyncShardArgs struct {
+	ConfigNum int
+	Shard     int
+	Data      map[string]string
+	Acked     map[int64]uint64
+	Meta      ArgsMeta
+}
+
+type SyncShardReply struct {
+	Meta ReplyMeta
+}
+
+type SyncGCArgs struct {
+	ConfigNum int
+	Shard     int
+	Meta      ArgsMeta
+}
+
+type SyncGCReply struct {
+	Meta ReplyMeta
 }

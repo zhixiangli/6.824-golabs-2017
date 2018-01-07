@@ -126,7 +126,7 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 	reply.Err = OK
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	if args.Num < 0 {
+	if args.Num < 0 || args.Num >= len(sm.configs) {
 		reply.Config = sm.getLastConfig()
 	} else {
 		reply.Config = sm.configs[args.Num]
