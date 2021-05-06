@@ -1,5 +1,7 @@
 # MIT 6.824: Distributed Systems in Spring 2017
 
+[Home page](http://nil.csail.mit.edu/6.824/2017/)
+
 ## Progress
 - [x] **Lab 1: MapReduce**
 - [x] **Lab 2: Raft**
